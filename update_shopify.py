@@ -12,10 +12,10 @@ from oauth2client.service_account import ServiceAccountCredentials
 #                        ENV-VARIABLER FÖR DIN BUTIK & DB                    #
 ##############################################################################
 
-SHOP_DOMAIN = os.getenv("SHOP_DOMAIN")           # ex: "8bc028-b3.myshopify.com"
+SHOP_DOMAIN = os.getenv("SHOP_DOMAIN")           
 SHOPIFY_ACCESS_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN")
 LOCATION_ID = os.getenv("LOCATION_ID")
-DATABASE_URL = os.getenv("DATABASE_URL")         # ex: "postgresql://...@.../tags_db"
+DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
 if not (SHOP_DOMAIN and SHOPIFY_ACCESS_TOKEN and LOCATION_ID and DATABASE_URL and GOOGLE_CREDENTIALS_JSON):
@@ -36,10 +36,8 @@ client = gspread.authorize(google_creds)
 #              RELEVANTA TAGGAR & MAPPNING TILL "SERIER" (kollektioner)      #
 ##############################################################################
 
-# Taggar du hanterar i DB (best seller, male, female, unisex)
 RELEVANT_TAGS = {"male", "female", "unisex", "best seller", "bestseller"}
 
-# Mappning: tag → "serie"-namn
 SERIES_MAPPING = {
     "male": "men",
     "female": "women",
@@ -48,12 +46,12 @@ SERIES_MAPPING = {
     "bestseller": "bestsellers"
 }
 
-# Kollektion-ID (dina "produktserier") i Shopify:
+# Hårdkodade kollektions-ID för "Men", "Women", "Unisex", "Bestsellers"
 SERIES_COLLECTION_ID = {
-    "men": 633426805078,        # https://admin.shopify.com/store/8bc028-b3/collections/633426805078
-    "unisex": 633428934998,     # https://admin.shopify.com/store/8bc028-b3/collections/633428934998
-    "women": 633426870614,      # https://admin.shopify.com/store/8bc028-b3/collections/633426870614
-    "bestsellers": 626035360086 # https://admin.shopify.com/store/8bc028-b3/collections/626035360086
+    "men": 633426805078,       # .../collections/633426805078
+    "unisex": 633428934998,    # .../collections/633428934998
+    "women": 633426870614,     # .../collections/633426870614
+    "bestsellers": 626035360086  # .../collections/626035360086
 }
 
 ##############################################################################
@@ -65,8 +63,8 @@ def get_db_connection():
 
 def load_tags_cache_db():
     """
-    Returnerar en dict { product_id (str): [tag1, tag2, ...], ... }
-    från tabellen relevant_tags_cache i databasen.
+    Returnerar en dict { product_id: [tag1, tag2, ...] }
+    från tabellen 'relevant_tags_cache' i DB.
     """
     cache_dict = {}
     conn = get_db_connection()
@@ -87,15 +85,14 @@ def load_tags_cache_db():
 
 def build_series_list(tag_list):
     """
-    Givet en lista av taggar, ex. ["Male","BEST SELLER","Unisex"],
-    returnerar en lista av serier, ex. ["men","bestsellers","unisex"].
+    Ex: ["Male","BEST SELLER"] => ["men","bestsellers"] (sorterad)
     """
     series_set = set()
     for t in tag_list:
         lower_t = t.lower()
         if lower_t in SERIES_MAPPING:
             series_set.add(SERIES_MAPPING[lower_t])
-    return sorted(series_set)  # ex. ["bestsellers","men","unisex"]
+    return sorted(series_set)
 
 ##############################################################################
 #                     SHOPIFY-API: TAGGAR, INVENTORY, KOLLEKTIONER           #
@@ -157,7 +154,7 @@ def update_product_tags(product_id, new_tags_list):
         print(f"   -> FEL! {resp.status_code}: {resp.text}\n")
 
 ##############################################################################
-#        KOLLEKTION-API: LÄGG TILL / TA BORT EN PRODUKT UR EN KOLLEKTION     #
+#         KOLLEKTIONER: ADD/REMOVE EN PRODUKT UR KOLLEKTION VIA /COLLECTS    #
 ##############################################################################
 
 def get_collections_for_product(product_id):
@@ -177,8 +174,7 @@ def get_collections_for_product(product_id):
             collects = data.get("collects", [])
             for c in collects:
                 cid = c["collection_id"]
-                collects_map[cid] = c["id"]  # det unika collect-id:et
-            # Kolla om mer data finns (paginering)
+                collects_map[cid] = c["id"]  # collect_id
             link_header = resp.headers.get("Link", "")
             next_link = None
             if 'rel="next"' in link_header:
@@ -200,7 +196,6 @@ def get_collections_for_product(product_id):
 def add_product_to_collection(product_id, collection_id):
     """
     POST /collects.json => 201 Created
-    { "collect": { "product_id": <p>, "collection_id": <c> } }
     """
     endpoint = f"{BASE_URL}/collects.json"
     headers = {
@@ -228,8 +223,8 @@ def remove_product_from_collection(collect_id):
     """
     endpoint = f"{BASE_URL}/collects/{collect_id}.json"
     headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
-
     print(f"[remove_product_from_collection] => DELETE {endpoint}")
+
     resp = safe_api_call(requests.delete, endpoint, headers=headers)
     if resp.status_code == 200:
         print("   -> OK! Tog bort produkten ur kollektionen.\n")
@@ -238,19 +233,20 @@ def remove_product_from_collection(collect_id):
 
 def update_collections_for_product(product_id, new_series):
     """
-    1) Hämta befintliga collects (kollektioner produkten redan ligger i).
-    2) Bygg en set av "korrekta" collection_ids (enl. new_series + SERIES_COLLECTION_ID).
-    3) Lägg till dem (POST) om saknas, ta bort (DELETE) om överskott.
+    1) Hämta de kollektioner produkten redan är i (via GET /collects?product_id=...).
+    2) Räkna ut de kollektioner (men, women, unisex, bestsellers) produkten
+       ska vara i (enligt new_series).
+    3) Lägga till om saknas, ta bort om överflödiga.
     """
-    existing_map = get_collections_for_product(product_id)  
-      # ex. { 633426805078: <collectID1>, 626035360086: <collectID2> }
+    existing_map = get_collections_for_product(product_id)
+    # ex. { 633426805078: 12345, ... }
     wanted_ids = set()
     for s in new_series:
-        c_id = SERIES_COLLECTION_ID.get(s)
-        if c_id:
-            wanted_ids.add(c_id)
+        cid = SERIES_COLLECTION_ID.get(s)
+        if cid:
+            wanted_ids.add(cid)
 
-    existing_ids = set(existing_map.keys())
+    existing_ids = set(existing_map.keys())  # redan i kollektioner
 
     add_ids = wanted_ids - existing_ids
     remove_ids = existing_ids - wanted_ids
@@ -271,7 +267,7 @@ def update_collections_for_product(product_id, new_series):
         print("   -> Inga kollektioner att ta bort.")
 
 ##############################################################################
-#                          HJÄLPFUNKTIONER FÖR SHEET ETC                     #
+#                    HJÄLPFUNKTIONER: NORMALIZE MINUS ETC                    #
 ##############################################################################
 
 def normalize_minus_sign(value_str):
@@ -282,6 +278,10 @@ def normalize_minus_sign(value_str):
             .replace('\u2212', '-'))
 
 def extract_perfume_number_from_product_title(title):
+    """
+    Letar efter 1-3 siffror + ev. decimal,
+    men exkluderar om "bundle" eller "sample" i titeln (vi skippar i main).
+    """
     pattern = r"\b(\d{1,3}(\.\d+)?)(?!\s*\d)"
     match = re.search(pattern, title)
     if match:
@@ -291,13 +291,15 @@ def extract_perfume_number_from_product_title(title):
             return None
     return None
 
+##############################################################################
+#                           HÄMTA SHOPIFY-PRODUKTER                          #
+##############################################################################
+
 def fetch_all_products():
     print("[fetch_all_products] Hämtar alla produkter från Shopify...")
     all_products = []
     endpoint = f"{BASE_URL}/products.json"
-    headers = {
-        "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN
-    }
+    headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
     params = {"limit": 250}
 
     while True:
@@ -344,19 +346,23 @@ def main():
 
         # Bygg en perfume_lookup => { parfymnr: product_dict }
         perfume_lookup = {}
-        print("[main] Bygger 'perfume_lookup' (skippar 'sample' i titeln)...\n")
+        print("[main] Bygger 'perfume_lookup' (skippar 'sample' ELLER 'bundle')...\n")
         for i, product in enumerate(all_products, start=1):
             product_id = str(product["id"])
-            title = product.get("title", "")
-            if "sample" in title.lower():
-                print(f" [Prod #{i}] '{title}' => 'sample', skippar.")
+            title = product.get("title", "").lower()
+
+            # SKIPPA om "sample" eller "bundle" finns i titeln
+            if "sample" in title or "bundle" in title:
+                print(f" [Prod #{i}] '{title}' => har 'sample' eller 'bundle', skippar.")
                 continue
+
+            # extrahera parfymnr
             parfnum = extract_perfume_number_from_product_title(title)
             if parfnum is not None:
                 perfume_lookup[parfnum] = product
-                print(f" [Prod #{i}] '{title}' => parfnum={parfnum}, product_id={product_id}")
+                print(f" [Prod #{i}] title='{title}' => parfnum={parfnum}, product_id={product_id}")
             else:
-                print(f" [Prod #{i}] '{title}' => ingen parfymnr-match.")
+                print(f" [Prod #{i}] title='{title}' => ingen parfymnr-match.")
 
         # 3) Öppna Google Sheet "OBC lager"
         print("\n[main] Öppnar Google Sheet 'OBC lager'...")
@@ -404,30 +410,29 @@ def main():
 
                 # (B) "Relevanta" taggar i DB
                 db_tags = relevant_tags_cache.get(p_id, [])  # ex. ["Male","BEST SELLER"]
-                # Bygg vilka "serier" => ex. ["men","bestsellers"] 
-                series_list = build_series_list(db_tags)
+                series_list = build_series_list(db_tags)     # ex. ["men","bestsellers"]
 
-                # (C) Kolla nuvarande "tags" i Shopify
+                # (C) Taggar i Shopify
                 shopify_tags_str = product_data.get("tags","")
                 shopify_tags_list = [t.strip() for t in shopify_tags_str.split(",") if t.strip()]
 
                 if antal_int == 0:
-                    # => Ta bort relevanta taggar
+                    # => ta bort relevanta taggar + rensa kollektioner
                     new_tags = []
                     for t in shopify_tags_list:
                         if t.lower() not in RELEVANT_TAGS:
                             new_tags.append(t)
                     if len(new_tags) != len(shopify_tags_list):
-                        print(f"   -> Lager=0 => ta bort relev. taggar => {new_tags}")
+                        print(f"   -> Lager=0 => ta bort relevanta taggar => {new_tags}")
                         update_product_tags(p_id, new_tags)
                     else:
                         print("   -> Inga relevanta taggar att ta bort.")
 
-                    # => Ta bort ur kollektioner
-                    print(f"   -> Lager=0 => tar bort ur kollektioner.")
-                    update_collections_for_product(p_id, [])  # tom lista
+                    # => ta bort ur kollektioner
+                    print("   -> Lager=0 => ta bort ur kollektioner.")
+                    update_collections_for_product(p_id, [])
                 else:
-                    # => LÄGG TILLBAKA relevanta taggar
+                    # => lägg tillbaka relevanta taggar
                     new_tags = shopify_tags_list[:]
                     changed = False
                     for rt in db_tags:
@@ -440,7 +445,7 @@ def main():
                     else:
                         print("   -> Lager>0 => inga relevanta taggar saknades.")
 
-                    # => LÄGG TILL kollektioner
+                    # => lägg till i kollektioner
                     if series_list:
                         print(f"   -> Lager>0 => uppdatera kollektioner => {series_list}")
                         update_collections_for_product(p_id, series_list)
