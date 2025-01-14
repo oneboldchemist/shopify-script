@@ -9,31 +9,33 @@ from psycopg2.extras import RealDictCursor
 from oauth2client.service_account import ServiceAccountCredentials
 
 ##############################################################################
-#                        ENV-VARIABLER FÖR DIN BUTIK & DB                    #
+#                     MILJÖVARIABLER FÖR SHOPIFY, DB, GOOGLE SHEETS          #
 ##############################################################################
 
-SHOP_DOMAIN = os.getenv("SHOP_DOMAIN")           
+SHOP_DOMAIN = os.getenv("SHOP_DOMAIN")  # ex: "8bc028-b3.myshopify.com"
 SHOPIFY_ACCESS_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN")
 LOCATION_ID = os.getenv("LOCATION_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
 if not (SHOP_DOMAIN and SHOPIFY_ACCESS_TOKEN and LOCATION_ID and DATABASE_URL and GOOGLE_CREDENTIALS_JSON):
-    raise ValueError("Saknas en eller flera ENV vars (SHOP_DOMAIN, SHOPIFY_ACCESS_TOKEN, LOCATION_ID, DATABASE_URL, GOOGLE_CREDENTIALS_JSON).")
+    raise ValueError("Saknas en eller flera environment-variabler: "
+                     "SHOP_DOMAIN, SHOPIFY_ACCESS_TOKEN, LOCATION_ID, "
+                     "DATABASE_URL, GOOGLE_CREDENTIALS_JSON.")
 
 BASE_URL = f"https://{SHOP_DOMAIN}/admin/api/2023-07"
 
 ##############################################################################
-#                         GOOGLE SHEETS-KONFIG (GSPREAD)                     #
+#                            GOOGLE SHEETS KONFIG                             #
 ##############################################################################
 
-scope = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
 google_creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client = gspread.authorize(google_creds)
+gspread_client = gspread.authorize(google_creds)
 
 ##############################################################################
-#              RELEVANTA TAGGAR & MAPPNING TILL "SERIER" (kollektioner)      #
+#          RELEVANTA TAGGAR & MAPPNING TILL "SERIER" (KOLLEKTIONER)          #
 ##############################################################################
 
 RELEVANT_TAGS = {"male", "female", "unisex", "best seller", "bestseller"}
@@ -46,16 +48,16 @@ SERIES_MAPPING = {
     "bestseller": "bestsellers"
 }
 
-# Hårdkodade kollektions-ID för "Men", "Women", "Unisex", "Bestsellers"
+# Kollektioner (produktserier) i Shopify: men, women, unisex, bestsellers
 SERIES_COLLECTION_ID = {
-    "men": 633426805078,       # .../collections/633426805078
-    "unisex": 633428934998,    # .../collections/633428934998
-    "women": 633426870614,     # .../collections/633426870614
-    "bestsellers": 626035360086  # .../collections/626035360086
+    "men": 633426805078,       # ex: "Men"
+    "women": 633426870614,     # ex: "Women"
+    "unisex": 633428934998,    # ex: "Unisex"
+    "bestsellers": 626035360086  # ex: "Bestsellers"
 }
 
 ##############################################################################
-#             DB-FUNKTION: LADDAR relevanta taggar (product_id -> tags)      #
+#                          DB-FUNKTION FÖR TAGGAR                            #
 ##############################################################################
 
 def get_db_connection():
@@ -63,8 +65,8 @@ def get_db_connection():
 
 def load_tags_cache_db():
     """
-    Returnerar en dict { product_id: [tag1, tag2, ...] }
-    från tabellen 'relevant_tags_cache' i DB.
+    Hämtar en dict {product_id: [tag1, tag2, ...]}
+    från tabellen relevant_tags_cache i DB.
     """
     cache_dict = {}
     conn = get_db_connection()
@@ -80,12 +82,12 @@ def load_tags_cache_db():
     return cache_dict
 
 ##############################################################################
-#                   HJÄLPFUNKTION: BYGG "SERIES" UR TAGGAR                   #
+#                          BYGG "SERIES" UR TAGGAR                           #
 ##############################################################################
 
 def build_series_list(tag_list):
     """
-    Ex: ["Male","BEST SELLER"] => ["men","bestsellers"] (sorterad)
+    Ex: ["Male", "BEST SELLER"] => ["men","bestsellers"] (sorterad)
     """
     series_set = set()
     for t in tag_list:
@@ -95,13 +97,13 @@ def build_series_list(tag_list):
     return sorted(series_set)
 
 ##############################################################################
-#                     SHOPIFY-API: TAGGAR, INVENTORY, KOLLEKTIONER           #
+#                           SHOPIFY API-FUNKTIONER                           #
 ##############################################################################
 
 def safe_api_call(func, *args, **kwargs):
     try:
         response = func(*args, **kwargs)
-        time.sleep(1)
+        time.sleep(1)  # liten paus för att undvika rate limit
         return response
     except requests.exceptions.RequestException as e:
         print("[safe_api_call] Nätverksfel:", e)
@@ -119,7 +121,7 @@ def update_inventory_level(inventory_item_id, new_quantity):
         "inventory_item_id": inventory_item_id,
         "available": new_quantity
     }
-    print(f"[update_inventory_level] => {endpoint}")
+    print(f"[update_inventory_level] => POST {endpoint}")
     print(f"   location_id={LOCATION_ID}, inventory_item_id={inventory_item_id}, available={new_quantity}")
 
     resp = safe_api_call(requests.post, endpoint, headers=headers, json=payload)
@@ -144,7 +146,7 @@ def update_product_tags(product_id, new_tags_list):
             "tags": tags_str
         }
     }
-    print(f"[update_product_tags] => {endpoint}")
+    print(f"[update_product_tags] => PUT {endpoint}")
     print(f"   product_id={product_id}, tags='{tags_str}'")
 
     resp = safe_api_call(requests.put, endpoint, headers=headers, json=payload)
@@ -154,13 +156,13 @@ def update_product_tags(product_id, new_tags_list):
         print(f"   -> FEL! {resp.status_code}: {resp.text}\n")
 
 ##############################################################################
-#         KOLLEKTIONER: ADD/REMOVE EN PRODUKT UR KOLLEKTION VIA /COLLECTS    #
+#   KOLLEKTIONER / PRODUKTSERIER: ADD/REMOVE MED COLLECTS API                #
 ##############################################################################
 
 def get_collections_for_product(product_id):
     """
     GET /collects.json?product_id=...
-    Returnerar ex. { collection_id: collect_id, ... }
+    Return ex: { collection_id: collect_id, ... }
     """
     endpoint = f"{BASE_URL}/collects.json"
     headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
@@ -219,7 +221,7 @@ def add_product_to_collection(product_id, collection_id):
 
 def remove_product_from_collection(collect_id):
     """
-    DELETE /collects/{collect_id}.json => tar bort produkten ur kollektionen
+    DELETE /collects/{collect_id}.json
     """
     endpoint = f"{BASE_URL}/collects/{collect_id}.json"
     headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
@@ -233,33 +235,31 @@ def remove_product_from_collection(collect_id):
 
 def update_collections_for_product(product_id, new_series):
     """
-    1) Hämta de kollektioner produkten redan är i (via GET /collects?product_id=...).
-    2) Räkna ut de kollektioner (men, women, unisex, bestsellers) produkten
-       ska vara i (enligt new_series).
-    3) Lägga till om saknas, ta bort om överflödiga.
+    - Hämta redan existerande collects => ex. {633426805078: 12345}
+    - Räkna ut vilka kollektioner vi vill ha => series -> collection_id
+    - Lägg till om saknas, ta bort om överflödiga
     """
     existing_map = get_collections_for_product(product_id)
-    # ex. { 633426805078: 12345, ... }
     wanted_ids = set()
     for s in new_series:
         cid = SERIES_COLLECTION_ID.get(s)
         if cid:
             wanted_ids.add(cid)
 
-    existing_ids = set(existing_map.keys())  # redan i kollektioner
+    existing_ids = set(existing_map.keys())
 
     add_ids = wanted_ids - existing_ids
     remove_ids = existing_ids - wanted_ids
 
     if add_ids:
-        print(f"   -> Lägga till i kollektioner: {list(add_ids)}")
+        print(f"   -> Lägg till i kollektioner: {list(add_ids)}")
         for cid in add_ids:
             add_product_to_collection(product_id, cid)
     else:
         print("   -> Inga nya kollektioner att lägga till.")
 
     if remove_ids:
-        print(f"   -> Ta bort produkten ur kollektioner: {list(remove_ids)}")
+        print(f"   -> Ta bort ur kollektioner: {list(remove_ids)}")
         for cid in remove_ids:
             collect_id = existing_map[cid]
             remove_product_from_collection(collect_id)
@@ -267,8 +267,17 @@ def update_collections_for_product(product_id, new_series):
         print("   -> Inga kollektioner att ta bort.")
 
 ##############################################################################
-#                    HJÄLPFUNKTIONER: NORMALIZE MINUS ETC                    #
+#                    HJÄLP: IGNORERA "SAMPLE" ELLER "BUNDLE"                 #
 ##############################################################################
+
+def skip_product_title(title: str) -> bool:
+    """
+    Return True om vi ska ignorera produkten (innehåller 'sample' eller 'bundle').
+    """
+    lower_title = title.lower()
+    if "sample" in lower_title or "bundle" in lower_title:
+        return True
+    return False
 
 def normalize_minus_sign(value_str):
     if not value_str:
@@ -277,10 +286,11 @@ def normalize_minus_sign(value_str):
             .replace('−', '-')
             .replace('\u2212', '-'))
 
-def extract_perfume_number_from_product_title(title):
+def extract_perfume_number_from_product_title(title: str):
     """
-    Letar efter 1-3 siffror + ev. decimal,
-    men exkluderar om "bundle" eller "sample" i titeln (vi skippar i main).
+    Letar efter 1-3 siffror + ev decimal (ex: "149.0 ml" -> 149.0),
+    men *vi skippar* produkten helt om 'sample'/'bundle' -> se skip_product_title
+    (så denna funktion anropas endast om vi *inte* skippar).
     """
     pattern = r"\b(\d{1,3}(\.\d+)?)(?!\s*\d)"
     match = re.search(pattern, title)
@@ -292,7 +302,7 @@ def extract_perfume_number_from_product_title(title):
     return None
 
 ##############################################################################
-#                           HÄMTA SHOPIFY-PRODUKTER                          #
+#                                HÄMTA PRODUKTER                             #
 ##############################################################################
 
 def fetch_all_products():
@@ -338,40 +348,41 @@ def fetch_all_products():
 
 def main():
     try:
-        # 1) Ladda relevanta taggar från DB
+        # 1) Ladda relevanta taggar (DB)
         relevant_tags_cache = load_tags_cache_db()
 
         # 2) Hämta alla Shopify-produkter
         all_products = fetch_all_products()
 
-        # Bygg en perfume_lookup => { parfymnr: product_dict }
+        # Bygg en perfume_lookup => { parfnum: product_dict }
         perfume_lookup = {}
-        print("[main] Bygger 'perfume_lookup' (skippar 'sample' ELLER 'bundle')...\n")
+        print("[main] Bygger 'perfume_lookup' (skippar 'sample' / 'bundle')...\n")
         for i, product in enumerate(all_products, start=1):
             product_id = str(product["id"])
-            title = product.get("title", "").lower()
+            title = product.get("title","")
+            lower_title = title.lower()
 
-            # SKIPPA om "sample" eller "bundle" finns i titeln
-            if "sample" in title or "bundle" in title:
-                print(f" [Prod #{i}] '{title}' => har 'sample' eller 'bundle', skippar.")
+            # Om "sample" eller "bundle" i titeln -> skippa helt
+            if skip_product_title(title):
+                print(f" [Prod #{i}] '{title}' => har 'sample'/'bundle', skippar.")
                 continue
 
             # extrahera parfymnr
-            parfnum = extract_perfume_number_from_product_title(title)
+            parfnum = extract_perfume_number_from_product_title(lower_title)
             if parfnum is not None:
                 perfume_lookup[parfnum] = product
                 print(f" [Prod #{i}] title='{title}' => parfnum={parfnum}, product_id={product_id}")
             else:
                 print(f" [Prod #{i}] title='{title}' => ingen parfymnr-match.")
 
-        # 3) Öppna Google Sheet "OBC lager"
-        print("\n[main] Öppnar Google Sheet 'OBC lager'...")
-        sheet = client.open("OBC lager").sheet1
-        rows = sheet.get_all_records()
-        print(f"[main] Antal rader i kalkylarket: {len(rows)}\n")
+        # 3) Öppna Google Sheet 'OBC lager' men ange expected_headers => ["nummer:", "Antal:"]
+        sheet = gspread_client.open("OBC lager").sheet1
+        records = sheet.get_all_records(expected_headers=["nummer:", "Antal:"])
+        print(f"[main] Antal rader (exkl. header): {len(records)}\n")
 
         # 4) Loopa rader
-        for idx, row in enumerate(rows, start=1):
+        for idx, row in enumerate(records, start=1):
+            # row har nycklar: "nummer:", "Antal:"
             raw_num = str(row.get("nummer:", "")).strip()
             raw_antal = str(row.get("Antal:", "")).strip()
 
@@ -391,7 +402,7 @@ def main():
                 if antal_int < 0:
                     antal_int = 0
             except ValueError:
-                print("   -> Kan ej tolka som siffror, hoppar.\n")
+                print("   -> Kan ej tolka siffror, hoppar.\n")
                 continue
 
             # Finns parfnum i perfume_lookup?
@@ -408,16 +419,17 @@ def main():
                     if inv_item_id:
                         update_inventory_level(inv_item_id, antal_int)
 
-                # (B) "Relevanta" taggar i DB
-                db_tags = relevant_tags_cache.get(p_id, [])  # ex. ["Male","BEST SELLER"]
-                series_list = build_series_list(db_tags)     # ex. ["men","bestsellers"]
+                # (B) Taggar i DB => ex. ["Male","BEST SELLER","Unisex"]
+                db_tags = relevant_tags_cache.get(p_id, [])
+                # Bygg "series" => ["men","bestsellers","unisex"]
+                series_list = build_series_list(db_tags)
 
-                # (C) Taggar i Shopify
+                # (C) Taggar i Shopify just nu
                 shopify_tags_str = product_data.get("tags","")
                 shopify_tags_list = [t.strip() for t in shopify_tags_str.split(",") if t.strip()]
 
                 if antal_int == 0:
-                    # => ta bort relevanta taggar + rensa kollektioner
+                    # => ta bort relevanta taggar
                     new_tags = []
                     for t in shopify_tags_list:
                         if t.lower() not in RELEVANT_TAGS:
@@ -429,23 +441,23 @@ def main():
                         print("   -> Inga relevanta taggar att ta bort.")
 
                     # => ta bort ur kollektioner
-                    print("   -> Lager=0 => ta bort ur kollektioner.")
+                    print("   -> Lager=0 => ta bort alla serier (kollektioner).")
                     update_collections_for_product(p_id, [])
                 else:
                     # => lägg tillbaka relevanta taggar
                     new_tags = shopify_tags_list[:]
-                    changed = False
+                    changed_tags = False
                     for rt in db_tags:
                         if rt not in new_tags:
                             new_tags.append(rt)
-                            changed = True
-                    if changed:
+                            changed_tags = True
+                    if changed_tags:
                         print(f"   -> Lager>0 => lägger tillbaka taggar => {new_tags}")
                         update_product_tags(p_id, new_tags)
                     else:
                         print("   -> Lager>0 => inga relevanta taggar saknades.")
 
-                    # => lägg till i kollektioner
+                    # => uppdatera kollektioner
                     if series_list:
                         print(f"   -> Lager>0 => uppdatera kollektioner => {series_list}")
                         update_collections_for_product(p_id, series_list)
@@ -454,10 +466,14 @@ def main():
             else:
                 print(f"   -> Ingen produkt för parfnum={num_float}.\n")
 
-        print("\n[main] KLART – Scriptet har behandlat alla rader i Google Sheet.\n")
+        print("\n[main] KLART – Scriptet har behandlat alla rader.\n")
 
     except Exception as e:
         print(f"Fel i main(): {e}")
+
+##############################################################################
+#                                   START                                    #
+##############################################################################
 
 if __name__ == "__main__":
     main()
