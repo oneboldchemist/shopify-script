@@ -12,12 +12,14 @@ from oauth2client.service_account import ServiceAccountCredentials
 #                    GEMENSAMMA KONSTANTER OCH FUNKTIONER                    #
 ##############################################################################
 
-RELEVANT_TAGS = {"male","female","unisex","best seller","bestseller"}
+# Nedan har vi ENBART "bestseller" som giltig variant, ej "best seller"  # <-- [NYTT/ÄNDRAT]
+RELEVANT_TAGS = {"male","female","unisex","bestseller"}
+
+# SERIES_MAPPING har också enbart "bestseller"  # <-- [NYTT/ÄNDRAT]
 SERIES_MAPPING = {
     "male": "men",
     "female": "women",
     "unisex": "unisex",
-    "best seller": "bestsellers",
     "bestseller": "bestsellers"
 }
 
@@ -71,7 +73,7 @@ def build_series_list(tag_list):
 def load_tags_cache(db_url):
     """
     Hämtar alla (product_id, tags) från tabellen relevant_tags_cache i DB.
-    Returnerar en dict { '8859929837910': ['BEST SELLER','Male'], ... }
+    Returnerar en dict { '8859929837910': ['BESTSELLER','Male'], ... }
     """
     conn = psycopg2.connect(db_url)
     from psycopg2.extras import RealDictCursor
@@ -348,7 +350,7 @@ def process_store1(db_tags, domain, token, location_id, coll_map, records):
             print(f"  => Ingen Google-lagerinfo för parfymnr={parfnum} (title='{title}'), skippar.")
             continue
 
-        # Hämta taggar från DB om finns, annars från Shopify  # <-- [NYTT/ÄNDRAT]
+        # Hämta taggar från DB om finns, annars från Shopify
         if pid in db_tags:
             taglist = db_tags[pid][:]
         else:
@@ -357,12 +359,19 @@ def process_store1(db_tags, domain, token, location_id, coll_map, records):
             st_list= [t.strip() for t in st.split(",") if t.strip()]
             taglist = st_list
         
-        # Bygg en "union" av DB-taggar och redan existerande Shopify-taggar
-        # (så att om du manuellt lagt in t.ex. "female" i Shopify så hänger det kvar)
+        # Hämta även existerande taggar i Shopify
         shopify_existing = product_data.get("tags","")
         shopify_list = [t.strip() for t in shopify_existing.split(",") if t.strip()]
-        combined_tags = set([x.lower() for x in taglist] + [y.lower() for y in shopify_list])
 
+        # Slå ihop DB-taggar och Shopify-taggar (standardisera "best seller" -> "bestseller") # <-- [NYTT/ÄNDRAT]
+        combined_tags = []
+        for x in (taglist + shopify_list):
+            lx = x.lower()
+            if lx == "best seller":  
+                lx = "bestseller"
+            combined_tags.append(lx)
+        combined_set = set(combined_tags)
+        
         # För debug: spara gamla innan vi ändrar
         old_shopify_tags = list(shopify_list)
 
@@ -378,8 +387,8 @@ def process_store1(db_tags, domain, token, location_id, coll_map, records):
         if qty==0:
             # Ta bort relevanta taggar i RELEVANT_TAGS
             new_t = []
-            for t in combined_tags:
-                if t.lower() not in RELEVANT_TAGS:
+            for t in combined_set:
+                if t not in RELEVANT_TAGS:
                     new_t.append(t)
             new_t = sorted(list(set(new_t)))  # unik & sorterad
             print(f"   Gamla Shopify-taggar: {old_shopify_tags}")
@@ -391,14 +400,13 @@ def process_store1(db_tags, domain, token, location_id, coll_map, records):
 
         else:
             # Lägg till relevanta taggar om de saknas
-            # (dvs de som ligger i DB_tags och ev. du lagt manuellt)
-            new_t = sorted(list(combined_tags))
+            new_t = sorted(list(combined_set))
             print(f"   Gamla Shopify-taggar: {old_shopify_tags}")
             print(f"   Nya Shopify-taggar (efter merge): {new_t}")
             update_product_tags(domain, token, pid, new_t)
 
             # Bygg ny kollektionslista
-            series_list= build_series_list(new_t)  # <-- [NYTT: baseras på merge:ade taggarna]
+            series_list= build_series_list(new_t)  
             print(f"   => Vill uppdatera kollektioner till: {series_list}")
             update_collections_for_product(domain, token, pid, series_list, coll_map)
 
@@ -449,11 +457,10 @@ def process_store2(db_tags,
             continue
         qty= parfnum_map[parfnum]
 
-        # Hämta taggar för store1-produkten
+        # Hämta taggar för store1-produkten från DB eller Shopify
         if pid in db_tags:
             taglist = db_tags[pid][:]
         else:
-            # om ej i DB => utgå från existerande store1-taggar
             st = product_data.get("tags","")
             st_list = [t.strip() for t in st.split(",") if t.strip()]
             taglist = st_list
@@ -475,17 +482,25 @@ def process_store2(db_tags,
             if inv_id:
                 update_inventory_level(store2_domain, store2_token, store2_location, inv_id, qty)
 
-        # Kombinera DB-taggar med befintliga Shopify-taggar (store2)   # <-- [NYTT/ÄNDRAT]
+        # Kombinera DB-taggar med befintliga Shopify-taggar (store2), standardisera "best seller" -> "bestseller" 
         s2_existing = s2_product.get("tags","")
         s2_list = [t.strip() for t in s2_existing.split(",") if t.strip()]
-        combined_tags = set([x.lower() for x in taglist] + [y.lower() for y in s2_list])
+        
+        combined_tags = []
+        for x in (taglist + s2_list):
+            lx = x.lower()
+            if lx == "best seller":
+                lx = "bestseller"
+            combined_tags.append(lx)
+        combined_set = set(combined_tags)
+
         old_store2_tags = list(s2_list)
 
         if qty==0:
             # ta bort relevanta
             new_t=[]
-            for t in combined_tags:
-                if t.lower() not in RELEVANT_TAGS:
+            for t in combined_set:
+                if t not in RELEVANT_TAGS:
                     new_t.append(t)
             new_t = sorted(list(set(new_t)))
             print(f"   Gamla Shopify-taggar i store2: {old_store2_tags}")
@@ -496,7 +511,7 @@ def process_store2(db_tags,
             update_collections_for_product(store2_domain, store2_token, s2_pid, [], store2_coll_map)
 
         else:
-            new_t = sorted(list(combined_tags))
+            new_t = sorted(list(combined_set))
             print(f"   Gamla Shopify-taggar i store2: {old_store2_tags}")
             print(f"   Nya Shopify-taggar (efter merge): {new_t}")
             update_product_tags(store2_domain, store2_token, s2_pid, new_t)
