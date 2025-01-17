@@ -53,6 +53,10 @@ def normalize_minus_sign(value_str):
             .replace('\u2212','-'))
 
 def build_series_list(tag_list):
+    """
+    Returnerar en lista med kollektioner baserat på taggar som matchar SERIES_MAPPING.
+    T.ex. ['men','women','unisex','bestsellers'] beroende på vilka taggar som finns.
+    """
     sset = set()
     for t in tag_list:
         l = t.lower()
@@ -66,7 +70,8 @@ def build_series_list(tag_list):
 
 def load_tags_cache(db_url):
     """
-    Ex. { '8859929837910': ['BEST SELLER','Male'], ... }
+    Hämtar alla (product_id, tags) från tabellen relevant_tags_cache i DB.
+    Returnerar en dict { '8859929837910': ['BEST SELLER','Male'], ... }
     """
     conn = psycopg2.connect(db_url)
     from psycopg2.extras import RealDictCursor
@@ -78,7 +83,9 @@ def load_tags_cache(db_url):
             pid= row["product_id"]
             tstr= row["tags"] or ""
             tlist= tstr.split(",") if tstr else []
-            store_dict[pid]= tlist
+            # Normalisera (ta bort extra spaces osv)
+            clean_tags = [x.strip() for x in tlist if x.strip()]
+            store_dict[pid]= clean_tags
     conn.close()
     return store_dict
 
@@ -179,9 +186,9 @@ def update_inventory_level(domain, token, location_id, inventory_item_id, qty):
     }
     rr= safe_api_call(requests.post, endpoint, headers=headers, json=payload)
     if rr.status_code==200:
-        print(f"     => OK, lager => {qty}")
+        print(f"       => OK, lager satt till {qty}.")
     else:
-        print(f"     => FEL {rr.status_code}: {rr.text}")
+        print(f"       => FEL {rr.status_code}: {rr.text}")
 
 def update_product_tags(domain, token, product_id, new_tags_list):
     base_url= f"https://{domain}/admin/api/2023-07"
@@ -198,9 +205,9 @@ def update_product_tags(domain, token, product_id, new_tags_list):
     }
     rr= safe_api_call(requests.put, endpoint, headers=headers, json=payload)
     if rr.status_code==200:
-        print(f"     => OK, taggar => {new_tags_list}")
+        print(f"       => OK, taggar uppdaterade till: {new_tags_list}")
     else:
-        print(f"     => FEL {rr.status_code}: {rr.text}")
+        print(f"       => FEL {rr.status_code}: {rr.text}")
 
 def get_collections_for_product(domain, token, product_id):
     base_url= f"https://{domain}/admin/api/2023-07"
@@ -248,9 +255,9 @@ def add_product_to_collection(domain, token, product_id, collection_id):
     }
     rr= safe_api_call(requests.post, endpoint, headers=headers, json=payload)
     if rr.status_code==201:
-        print(f"     => OK, lade till product {product_id} i kollektion {collection_id}")
+        print(f"       => OK, lade till produkt {product_id} i kollektion {collection_id}")
     else:
-        print(f"     => FEL {rr.status_code}: {rr.text}")
+        print(f"       => FEL {rr.status_code}: {rr.text}")
 
 def remove_product_from_collection(domain, token, collect_id):
     base_url= f"https://{domain}/admin/api/2023-07"
@@ -258,27 +265,35 @@ def remove_product_from_collection(domain, token, collect_id):
     headers={"X-Shopify-Access-Token": token}
     rr= safe_api_call(requests.delete, endpoint, headers=headers)
     if rr.status_code==200:
-        print(f"     => OK, tog bort collect {collect_id}")
+        print(f"       => OK, tog bort collect {collect_id}")
     else:
-        print(f"     => FEL {rr.status_code}: {rr.text}")
+        print(f"       => FEL {rr.status_code}: {rr.text}")
 
 def update_collections_for_product(domain, token, product_id, new_series, col_map):
+    """
+    Uppdaterar vilka kollektioner (serier) produkten ska ligga i.
+    new_series är en lista, t.ex. ['men','unisex'].
+    col_map är en dict { 'men': ID, 'women':ID, ...}.
+    """
     existing_map= get_collections_for_product(domain, token, product_id)
     wanted_ids=set()
     for s in new_series:
         if s in col_map:
             wanted_ids.add(col_map[s])
     existing_ids=set(existing_map.keys())
-    add_ids= wanted_ids- existing_ids
-    remove_ids= existing_ids- wanted_ids
+
+    add_ids= wanted_ids - existing_ids
+    remove_ids= existing_ids - wanted_ids
+
     if add_ids:
-        print(f"   -> add {list(add_ids)}")
+        print(f"   -> kollektioner att LÄGGA TILL: {list(add_ids)}")
         for cid in add_ids:
             add_product_to_collection(domain, token, product_id, cid)
     else:
         print("   -> inga nya kollektioner att lägga till")
+
     if remove_ids:
-        print(f"   -> remove {list(remove_ids)}")
+        print(f"   -> kollektioner att TA BORT: {list(remove_ids)}")
         for cid in remove_ids:
             c_id= existing_map[cid]
             remove_product_from_collection(domain, token, c_id)
@@ -293,11 +308,16 @@ def process_store1(db_tags, domain, token, location_id, coll_map, records):
     """
     1) Bygg parfnum->antal (Google-lager)
     2) Hämta store1_products => id->product
-    3) Om id finns i db_tags => extrahera parfnum => sätt lager => taggar => kollektion
+    3) För varje produkt i store1:
+       - extrahera parfnum
+       - sätt lager
+       - uppdatera taggar
+       - uppdatera kollektioner
+       - logga tydligt vad som händer
     """
     print("\n--- process_store1 ---\n")
 
-    # Bygg parfnum->antal
+    # (1) Bygg parfnum->antal (från Google-lager)
     parfnum_map={}
     for r in records:
         raw_n= normalize_minus_sign(str(r.get("nummer:","")))
@@ -312,75 +332,93 @@ def process_store1(db_tags, domain, token, location_id, coll_map, records):
         except ValueError:
             pass
 
+    # (2) Hämta store1-products (id->product)
     store_map= fetch_store_id_map(domain, token)
 
+    # (3) Gå igenom alla relevanta produkter
     for pid, product_data in store_map.items():
-        if pid not in db_tags:
-            # ej i DB => skip
-            continue
-        # extrahera parfnum
         title= product_data.get("title","")
         parfnum= extract_perfume_number_from_product_title(title)
         if parfnum is None:
-            continue
-        if parfnum not in parfnum_map:
-            print(f"  => Ingen google-lager info för parfnum={parfnum} (title='{title}')")
-            continue
-        qty= parfnum_map[parfnum]
+            continue  # skip om vi inte kan hitta nr
 
-        # taggar i DB
-        taglist= db_tags[pid]
-        series_list= build_series_list(taglist)
-        # shopify tags
-        st= product_data.get("tags","")
-        st_list= [t.strip() for t in st.split(",") if t.strip()]
+        # Hämta lager från Google-lager
+        qty= parfnum_map.get(parfnum)
+        if qty is None:
+            print(f"  => Ingen Google-lagerinfo för parfymnr={parfnum} (title='{title}'), skippar.")
+            continue
 
-        # Sätt lager
+        # Hämta taggar från DB om finns, annars från Shopify  # <-- [NYTT/ÄNDRAT]
+        if pid in db_tags:
+            taglist = db_tags[pid][:]
+        else:
+            # Om ej i DB => utgå ifrån existerande Shopify-taggar
+            st = product_data.get("tags","")
+            st_list= [t.strip() for t in st.split(",") if t.strip()]
+            taglist = st_list
+        
+        # Bygg en "union" av DB-taggar och redan existerande Shopify-taggar
+        # (så att om du manuellt lagt in t.ex. "female" i Shopify så hänger det kvar)
+        shopify_existing = product_data.get("tags","")
+        shopify_list = [t.strip() for t in shopify_existing.split(",") if t.strip()]
+        combined_tags = set([x.lower() for x in taglist] + [y.lower() for y in shopify_list])
+
+        # För debug: spara gamla innan vi ändrar
+        old_shopify_tags = list(shopify_list)
+
+        # Sätt lager (inventory)
+        print(f"\n** [STORE1] Hanterar produkt: PID={pid}, Titel='{title}', Parfymnr={parfnum}, Lager={qty} **")
         variants= product_data.get("variants",[])
         for var in variants:
             inv_id= var.get("inventory_item_id")
             if inv_id:
                 update_inventory_level(domain, token, location_id, inv_id, qty)
 
+        # Beroende på om qty=0 ska vi ev ta bort relevanta taggar/kollektioner
         if qty==0:
-            # ta bort relevanta
-            new_t=[]
-            for t in st_list:
+            # Ta bort relevanta taggar i RELEVANT_TAGS
+            new_t = []
+            for t in combined_tags:
                 if t.lower() not in RELEVANT_TAGS:
                     new_t.append(t)
-            if len(new_t)!= len(st_list):
-                update_product_tags(domain, token, pid, new_t)
-            update_collections_for_product(domain, token, pid, [], coll_map)
-        else:
-            # lägg tillbaka
-            changed=False
-            new_tags= st_list[:]
-            for rt in taglist:
-                if rt not in new_tags:
-                    new_tags.append(rt)
-                    changed= True
-            if changed:
-                update_product_tags(domain, token, pid, new_tags)
-            if series_list:
-                update_collections_for_product(domain, token, pid, series_list, coll_map)
-            else:
-                update_collections_for_product(domain, token, pid, [], coll_map)
+            new_t = sorted(list(set(new_t)))  # unik & sorterad
+            print(f"   Gamla Shopify-taggar: {old_shopify_tags}")
+            print(f"   Nya Shopify-taggar (efter borttagning): {new_t}")
+            update_product_tags(domain, token, pid, new_t)
 
+            print("   => Tar bort samtliga kollektioner (eftersom qty=0).")
+            update_collections_for_product(domain, token, pid, [], coll_map)
+
+        else:
+            # Lägg till relevanta taggar om de saknas
+            # (dvs de som ligger i DB_tags och ev. du lagt manuellt)
+            new_t = sorted(list(combined_tags))
+            print(f"   Gamla Shopify-taggar: {old_shopify_tags}")
+            print(f"   Nya Shopify-taggar (efter merge): {new_t}")
+            update_product_tags(domain, token, pid, new_t)
+
+            # Bygg ny kollektionslista
+            series_list= build_series_list(new_t)  # <-- [NYTT: baseras på merge:ade taggarna]
+            print(f"   => Vill uppdatera kollektioner till: {series_list}")
+            update_collections_for_product(domain, token, pid, series_list, coll_map)
 
 ##############################################################################
 #         UPPDATERA STORE 2: “översätt” via Store 1 “title” => Store 2       #
 ##############################################################################
 
-def process_store2(db_tags, store1_domain, store1_token, store2_domain, store2_token, store2_location, store2_coll_map, records):
+def process_store2(db_tags,
+                   store1_domain, store1_token,
+                   store2_domain, store2_token, store2_location,
+                   store2_coll_map, records):
     """
     1) Bygg parfnum->antal (Google-lager)
     2) Hämta store1 => id->product => skip sample => ger title
     3) Hämta store2 => title.lower()->product
-    4) loop db_tags => if product_id in store1 => hämta title => hämta parfnum => lager => store2 match => uppd
+    4) loopa igenom products i store1, matcha parfnum => db_tags => uppdatera store2
     """
     print("\n--- process_store2 (översätt via title) ---\n")
 
-    # (A) Bygg parfnum-lager
+    # (A) Bygg parfnum-lager (från Google-lager)
     parfnum_map={}
     for r in records:
         raw_n= normalize_minus_sign(str(r.get("nummer:","")))
@@ -400,63 +438,72 @@ def process_store2(db_tags, store1_domain, store1_token, store2_domain, store2_t
     # (C) store2_title->product
     store2_title_map= fetch_store_title_map(store2_domain, store2_token)
 
-    # (D) loop db_tags => product_id => taglist
-    for pid, taglist in db_tags.items():
-        if pid not in store1_id_map:
-            # i DB men store1 API gav ingen => skip
-            continue
-        p1_data= store1_id_map[pid]
-        title= p1_data.get("title","")
-        if skip_product_title(title):
-            continue
+    # (D) Loopa store1-produkter och kolla db_tags => uppdatera store2
+    for pid, product_data in store1_id_map.items():
+        title= product_data.get("title","")
         parfnum= extract_perfume_number_from_product_title(title)
         if parfnum is None:
             continue
         if parfnum not in parfnum_map:
-            print(f"  => Ingen lagerinfo för parfnum={parfnum} i google-lager (title='{title}')")
+            print(f"  => Ingen lagerinfo för parfymnr={parfnum} i Google-lager (title='{title}'), skippar.")
             continue
         qty= parfnum_map[parfnum]
 
-        # hitta store2 product
-        store2_product= store2_title_map.get(title.lower())
-        if not store2_product:
-            print(f"  => ingen match i store2 för title='{title}'")
-            continue
-        store2_pid= str(store2_product["id"])
-        variants= store2_product.get("variants",[])
+        # Hämta taggar för store1-produkten
+        if pid in db_tags:
+            taglist = db_tags[pid][:]
+        else:
+            # om ej i DB => utgå från existerande store1-taggar
+            st = product_data.get("tags","")
+            st_list = [t.strip() for t in st.split(",") if t.strip()]
+            taglist = st_list
 
-        # => Sätt lager
+        # Hitta motsvarande produkt i store2 via title.lower()
+        s2_product= store2_title_map.get(title.lower())
+        if not s2_product:
+            print(f"  => Hittar ingen match i store2 för title='{title}'")
+            continue
+
+        s2_pid= str(s2_product["id"])
+        variants= s2_product.get("variants",[])
+
+        print(f"\n** [STORE2] Hanterar produkt: Titel='{title}', Parfymnr={parfnum}, PID={s2_pid}, Lager={qty} **")
+
+        # Sätt lager i store2
         for var in variants:
             inv_id= var.get("inventory_item_id")
             if inv_id:
                 update_inventory_level(store2_domain, store2_token, store2_location, inv_id, qty)
 
-        series_list= build_series_list(taglist)
-        # store2 tags
-        s2t= store2_product.get("tags","")
-        s2_list= [t.strip() for t in s2t.split(",") if t.strip()]
+        # Kombinera DB-taggar med befintliga Shopify-taggar (store2)   # <-- [NYTT/ÄNDRAT]
+        s2_existing = s2_product.get("tags","")
+        s2_list = [t.strip() for t in s2_existing.split(",") if t.strip()]
+        combined_tags = set([x.lower() for x in taglist] + [y.lower() for y in s2_list])
+        old_store2_tags = list(s2_list)
 
         if qty==0:
+            # ta bort relevanta
             new_t=[]
-            for t in s2_list:
+            for t in combined_tags:
                 if t.lower() not in RELEVANT_TAGS:
                     new_t.append(t)
-            if len(new_t)!= len(s2_list):
-                update_product_tags(store2_domain, store2_token, store2_pid, new_t)
-            update_collections_for_product(store2_domain, store2_token, store2_pid, [], store2_coll_map)
+            new_t = sorted(list(set(new_t)))
+            print(f"   Gamla Shopify-taggar i store2: {old_store2_tags}")
+            print(f"   Nya Shopify-taggar (efter borttagning): {new_t}")
+            update_product_tags(store2_domain, store2_token, s2_pid, new_t)
+
+            print("   => Tar bort samtliga kollektioner i store2 (qty=0).")
+            update_collections_for_product(store2_domain, store2_token, s2_pid, [], store2_coll_map)
+
         else:
-            changed=False
-            new_tags= s2_list[:]
-            for rt in taglist:
-                if rt not in new_tags:
-                    new_tags.append(rt)
-                    changed=True
-            if changed:
-                update_product_tags(store2_domain, store2_token, store2_pid, new_tags)
-            if series_list:
-                update_collections_for_product(store2_domain, store2_token, store2_pid, series_list, store2_coll_map)
-            else:
-                update_collections_for_product(store2_domain, store2_token, store2_pid, [], store2_coll_map)
+            new_t = sorted(list(combined_tags))
+            print(f"   Gamla Shopify-taggar i store2: {old_store2_tags}")
+            print(f"   Nya Shopify-taggar (efter merge): {new_t}")
+            update_product_tags(store2_domain, store2_token, s2_pid, new_t)
+
+            series_list= build_series_list(new_t)
+            print(f"   => Vill uppdatera kollektioner i store2 till: {series_list}")
+            update_collections_for_product(store2_domain, store2_token, s2_pid, series_list, store2_coll_map)
 
 ##############################################################################
 #                                   MAIN                                     #
@@ -499,7 +546,7 @@ def main():
         records= sheet.get_all_records(expected_headers=["nummer:", "Antal:"])
         print(f"[main] => {len(records)} rader i Google-lager.\n")
 
-        # 3) Ladda DB
+        # 3) Ladda DB (relevant_tags_cache)
         db_tags= load_tags_cache(db_url)
 
         # 4) Uppdatera Store1 direkt (master)
