@@ -12,10 +12,10 @@ from oauth2client.service_account import ServiceAccountCredentials
 #                    GEMENSAMMA KONSTANTER OCH FUNKTIONER                    #
 ##############################################################################
 
-# Nedan har vi ENBART "bestseller" som giltig variant, ej "best seller"  # <-- [NYTT/ÄNDRAT]
+# Endast "bestseller" som giltig variant, ej "best seller"
 RELEVANT_TAGS = {"male","female","unisex","bestseller"}
 
-# SERIES_MAPPING har också enbart "bestseller"  # <-- [NYTT/ÄNDRAT]
+# SERIES_MAPPING har också enbart "bestseller"
 SERIES_MAPPING = {
     "male": "men",
     "female": "women",
@@ -76,18 +76,17 @@ def load_tags_cache(db_url):
     Returnerar en dict { '8859929837910': ['BESTSELLER','Male'], ... }
     """
     conn = psycopg2.connect(db_url)
-    from psycopg2.extras import RealDictCursor
     store_dict={}
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT product_id, tags FROM relevant_tags_cache;")
-        rows=cur.fetchall()
+        rows = cur.fetchall()
         for row in rows:
-            pid= row["product_id"]
-            tstr= row["tags"] or ""
-            tlist= tstr.split(",") if tstr else []
+            pid = row["product_id"]
+            tstr = row["tags"] or ""
+            tlist = tstr.split(",") if tstr else []
             # Normalisera (ta bort extra spaces osv)
             clean_tags = [x.strip() for x in tlist if x.strip()]
-            store_dict[pid]= clean_tags
+            store_dict[pid] = clean_tags
     conn.close()
     return store_dict
 
@@ -97,35 +96,35 @@ def load_tags_cache(db_url):
 
 def fetch_store_id_map(domain, token):
     """
-    Return => { product_id (str): product_dict}
+    Return => { product_id (str): product_dict }
     skip sample/bundle
     """
-    base_url= f"https://{domain}/admin/api/2023-07"
-    endpoint= base_url + "/products.json"
-    headers= {"X-Shopify-Access-Token": token}
-    params= {"limit":250}
-    out_map={}
+    base_url = f"https://{domain}/admin/api/2023-07"
+    endpoint = base_url + "/products.json"
+    headers = {"X-Shopify-Access-Token": token}
+    params = {"limit": 250}
+    out_map = {}
     while True:
-        r= safe_api_call(requests.get, endpoint, headers=headers, params=params)
-        if r.status_code==200:
-            data= r.json()
-            prods= data.get("products",[])
+        r = safe_api_call(requests.get, endpoint, headers=headers, params=params)
+        if r.status_code == 200:
+            data = r.json()
+            prods = data.get("products", [])
             for p in prods:
-                pid= str(p["id"])
-                title= p.get("title","")
+                pid = str(p["id"])
+                title = p.get("title", "")
                 if skip_product_title(title):
                     continue
-                out_map[pid]= p
-            link_h= r.headers.get("Link","")
-            next_link=None
+                out_map[pid] = p
+            link_h = r.headers.get("Link", "")
+            next_link = None
             if 'rel="next"' in link_h:
                 for part in link_h.split(','):
                     if 'rel="next"' in part:
-                        next_link= part[part.find("<")+1:part.find(">")]
+                        next_link = part[part.find("<")+1:part.find(">")]
                         break
             if next_link:
-                endpoint= next_link
-                params={}
+                endpoint = next_link
+                params = {}
             else:
                 break
         else:
@@ -138,31 +137,31 @@ def fetch_store_id_map(domain, token):
 ##############################################################################
 
 def fetch_store_title_map(domain, token):
-    base_url= f"https://{domain}/admin/api/2023-07"
-    endpoint= base_url + "/products.json"
-    headers= {"X-Shopify-Access-Token": token}
-    params= {"limit":250}
-    title_map={}
+    base_url = f"https://{domain}/admin/api/2023-07"
+    endpoint = base_url + "/products.json"
+    headers = {"X-Shopify-Access-Token": token}
+    params = {"limit": 250}
+    title_map = {}
     while True:
-        r= safe_api_call(requests.get, endpoint, headers=headers, params=params)
-        if r.status_code==200:
-            dd= r.json()
-            prods= dd.get("products",[])
+        r = safe_api_call(requests.get, endpoint, headers=headers, params=params)
+        if r.status_code == 200:
+            dd = r.json()
+            prods = dd.get("products", [])
             for p in prods:
-                t= p.get("title","")
+                t = p.get("title", "")
                 if skip_product_title(t):
                     continue
-                title_map[t.lower()]= p
-            link_h= r.headers.get("Link","")
-            next_link=None
+                title_map[t.lower()] = p
+            link_h = r.headers.get("Link", "")
+            next_link = None
             if 'rel="next"' in link_h:
                 for part in link_h.split(','):
                     if 'rel="next"' in part:
-                        next_link= part[part.find("<")+1:part.find(">")]
+                        next_link = part[part.find("<")+1:part.find(">")]
                         break
             if next_link:
-                endpoint= next_link
-                params={}
+                endpoint = next_link
+                params = {}
             else:
                 break
         else:
@@ -175,66 +174,66 @@ def fetch_store_title_map(domain, token):
 ##############################################################################
 
 def update_inventory_level(domain, token, location_id, inventory_item_id, qty):
-    base_url= f"https://{domain}/admin/api/2023-07"
-    endpoint= base_url + "/inventory_levels/set.json"
-    headers= {
+    base_url = f"https://{domain}/admin/api/2023-07"
+    endpoint = base_url + "/inventory_levels/set.json"
+    headers = {
         "X-Shopify-Access-Token": token,
-        "Content-Type":"application/json"
+        "Content-Type": "application/json"
     }
-    payload= {
+    payload = {
         "location_id": location_id,
         "inventory_item_id": inventory_item_id,
         "available": qty
     }
-    rr= safe_api_call(requests.post, endpoint, headers=headers, json=payload)
-    if rr.status_code==200:
+    rr = safe_api_call(requests.post, endpoint, headers=headers, json=payload)
+    if rr.status_code == 200:
         print(f"       => OK, lager satt till {qty}.")
     else:
         print(f"       => FEL {rr.status_code}: {rr.text}")
 
 def update_product_tags(domain, token, product_id, new_tags_list):
-    base_url= f"https://{domain}/admin/api/2023-07"
-    endpoint= base_url + f"/products/{product_id}.json"
-    headers={
+    base_url = f"https://{domain}/admin/api/2023-07"
+    endpoint = base_url + f"/products/{product_id}.json"
+    headers = {
         "X-Shopify-Access-Token": token,
-        "Content-Type":"application/json"
+        "Content-Type": "application/json"
     }
-    payload={
-        "product":{
+    payload = {
+        "product": {
             "id": product_id,
             "tags": ",".join(new_tags_list)
         }
     }
-    rr= safe_api_call(requests.put, endpoint, headers=headers, json=payload)
-    if rr.status_code==200:
+    rr = safe_api_call(requests.put, endpoint, headers=headers, json=payload)
+    if rr.status_code == 200:
         print(f"       => OK, taggar uppdaterade till: {new_tags_list}")
     else:
         print(f"       => FEL {rr.status_code}: {rr.text}")
 
 def get_collections_for_product(domain, token, product_id):
-    base_url= f"https://{domain}/admin/api/2023-07"
-    endpoint= base_url + "/collects.json"
-    headers= {"X-Shopify-Access-Token": token}
-    params= {"product_id": product_id, "limit":250}
-    col_map={}
+    base_url = f"https://{domain}/admin/api/2023-07"
+    endpoint = base_url + "/collects.json"
+    headers = {"X-Shopify-Access-Token": token}
+    params = {"product_id": product_id, "limit": 250}
+    col_map = {}
     while True:
-        r= safe_api_call(requests.get, endpoint, headers=headers, params=params)
-        if r.status_code==200:
-            dd=r.json()
-            c_list= dd.get("collects",[])
+        r = safe_api_call(requests.get, endpoint, headers=headers, params=params)
+        if r.status_code == 200:
+            dd = r.json()
+            c_list = dd.get("collects", [])
             for c in c_list:
-                cid= c["collection_id"]
-                col_map[cid]= c["id"]
-            link_h= r.headers.get("Link","")
-            next_link=None
+                cid = c["collection_id"]
+                col_map[cid] = c["id"]
+            link_h = r.headers.get("Link", "")
+            next_link = None
             if 'rel="next"' in link_h:
                 for part in link_h.split(','):
                     if 'rel="next"' in part:
-                        next_link= part[part.find("<")+1:part.find(">")]
+                        next_link = part[part.find("<")+1:part.find(">")]
                         break
             if next_link:
-                endpoint= next_link
-                params={}
+                endpoint = next_link
+                params = {}
             else:
                 break
         else:
@@ -243,30 +242,30 @@ def get_collections_for_product(domain, token, product_id):
     return col_map
 
 def add_product_to_collection(domain, token, product_id, collection_id):
-    base_url= f"https://{domain}/admin/api/2023-07"
-    endpoint= base_url + "/collects.json"
-    headers= {
+    base_url = f"https://{domain}/admin/api/2023-07"
+    endpoint = base_url + "/collects.json"
+    headers = {
         "X-Shopify-Access-Token": token,
-        "Content-Type":"application/json"
+        "Content-Type": "application/json"
     }
-    payload= {
-        "collect":{
+    payload = {
+        "collect": {
             "product_id": product_id,
             "collection_id": collection_id
         }
     }
-    rr= safe_api_call(requests.post, endpoint, headers=headers, json=payload)
-    if rr.status_code==201:
+    rr = safe_api_call(requests.post, endpoint, headers=headers, json=payload)
+    if rr.status_code == 201:
         print(f"       => OK, lade till produkt {product_id} i kollektion {collection_id}")
     else:
         print(f"       => FEL {rr.status_code}: {rr.text}")
 
 def remove_product_from_collection(domain, token, collect_id):
-    base_url= f"https://{domain}/admin/api/2023-07"
-    endpoint= base_url + f"/collects/{collect_id}.json"
-    headers={"X-Shopify-Access-Token": token}
-    rr= safe_api_call(requests.delete, endpoint, headers=headers)
-    if rr.status_code==200:
+    base_url = f"https://{domain}/admin/api/2023-07"
+    endpoint = base_url + f"/collects/{collect_id}.json"
+    headers = {"X-Shopify-Access-Token": token}
+    rr = safe_api_call(requests.delete, endpoint, headers=headers)
+    if rr.status_code == 200:
         print(f"       => OK, tog bort collect {collect_id}")
     else:
         print(f"       => FEL {rr.status_code}: {rr.text}")
@@ -275,17 +274,28 @@ def update_collections_for_product(domain, token, product_id, new_series, col_ma
     """
     Uppdaterar vilka kollektioner (serier) produkten ska ligga i.
     new_series är en lista, t.ex. ['men','unisex'].
-    col_map är en dict { 'men': ID, 'women':ID, ...}.
+    col_map är en dict { 'men': ID, 'women':ID, 'unisex':ID, 'bestsellers':ID }.
+    
+    Justering: vi tar bara bort produkten från kollektioner som också
+    finns i col_map. Andra kollektioner (irrelevanta för detta skript) lämnas kvar.
     """
-    existing_map= get_collections_for_product(domain, token, product_id)
-    wanted_ids=set()
+    existing_map = get_collections_for_product(domain, token, product_id)
+    
+    # Vilka kollektions-ID vi vill ha enligt new_series
+    wanted_ids = set()
     for s in new_series:
         if s in col_map:
             wanted_ids.add(col_map[s])
-    existing_ids=set(existing_map.keys())
 
-    add_ids= wanted_ids - existing_ids
-    remove_ids= existing_ids - wanted_ids
+    existing_ids = set(existing_map.keys())
+    relevant_collection_ids = set(col_map.values())  # Endast våra "kända" kollektioner
+
+    # Kollektions-ID som ska läggas till: de som finns i wanted_ids men inte redan är där
+    add_ids = wanted_ids - existing_ids
+
+    # Kollektions-ID som ska tas bort: de som redan finns, men endast om de är bland våra
+    # kända kollektioner, och inte längre är i wanted_ids.
+    remove_ids = (existing_ids & relevant_collection_ids) - wanted_ids
 
     if add_ids:
         print(f"   -> kollektioner att LÄGGA TILL: {list(add_ids)}")
@@ -297,7 +307,7 @@ def update_collections_for_product(domain, token, product_id, new_series, col_ma
     if remove_ids:
         print(f"   -> kollektioner att TA BORT: {list(remove_ids)}")
         for cid in remove_ids:
-            c_id= existing_map[cid]
+            c_id = existing_map[cid]
             remove_product_from_collection(domain, token, c_id)
     else:
         print("   -> inga kollektioner att ta bort")
@@ -320,32 +330,33 @@ def process_store1(db_tags, domain, token, location_id, coll_map, records):
     print("\n--- process_store1 ---\n")
 
     # (1) Bygg parfnum->antal (från Google-lager)
-    parfnum_map={}
+    parfnum_map = {}
     for r in records:
-        raw_n= normalize_minus_sign(str(r.get("nummer:","")))
-        raw_a= normalize_minus_sign(str(r.get("Antal:","")))
+        raw_n = normalize_minus_sign(str(r.get("nummer:", "")))
+        raw_a = normalize_minus_sign(str(r.get("Antal:", "")))
         if not raw_n or not raw_a:
             continue
         try:
-            nf= float(raw_n)
-            ai= int(raw_a)
-            if ai<0: ai=0
-            parfnum_map[nf]= ai
+            nf = float(raw_n)
+            ai = int(raw_a)
+            if ai < 0:
+                ai = 0
+            parfnum_map[nf] = ai
         except ValueError:
             pass
 
     # (2) Hämta store1-products (id->product)
-    store_map= fetch_store_id_map(domain, token)
+    store_map = fetch_store_id_map(domain, token)
 
     # (3) Gå igenom alla relevanta produkter
     for pid, product_data in store_map.items():
-        title= product_data.get("title","")
-        parfnum= extract_perfume_number_from_product_title(title)
+        title = product_data.get("title", "")
+        parfnum = extract_perfume_number_from_product_title(title)
         if parfnum is None:
             continue  # skip om vi inte kan hitta nr
 
         # Hämta lager från Google-lager
-        qty= parfnum_map.get(parfnum)
+        qty = parfnum_map.get(parfnum)
         if qty is None:
             print(f"  => Ingen Google-lagerinfo för parfymnr={parfnum} (title='{title}'), skippar.")
             continue
@@ -354,37 +365,36 @@ def process_store1(db_tags, domain, token, location_id, coll_map, records):
         if pid in db_tags:
             taglist = db_tags[pid][:]
         else:
-            # Om ej i DB => utgå ifrån existerande Shopify-taggar
-            st = product_data.get("tags","")
-            st_list= [t.strip() for t in st.split(",") if t.strip()]
+            st = product_data.get("tags", "")
+            st_list = [t.strip() for t in st.split(",") if t.strip()]
             taglist = st_list
         
-        # Hämta även existerande taggar i Shopify
-        shopify_existing = product_data.get("tags","")
+        # Hämta existerande taggar i Shopify (för att slå ihop)
+        shopify_existing = product_data.get("tags", "")
         shopify_list = [t.strip() for t in shopify_existing.split(",") if t.strip()]
 
-        # Slå ihop DB-taggar och Shopify-taggar (standardisera "best seller" -> "bestseller") # <-- [NYTT/ÄNDRAT]
+        # Slå ihop DB-taggar och Shopify-taggar, standardisera "best seller" -> "bestseller"
         combined_tags = []
         for x in (taglist + shopify_list):
             lx = x.lower()
-            if lx == "best seller":  
+            if lx == "best seller":
                 lx = "bestseller"
             combined_tags.append(lx)
         combined_set = set(combined_tags)
-        
+
         # För debug: spara gamla innan vi ändrar
         old_shopify_tags = list(shopify_list)
 
         # Sätt lager (inventory)
         print(f"\n** [STORE1] Hanterar produkt: PID={pid}, Titel='{title}', Parfymnr={parfnum}, Lager={qty} **")
-        variants= product_data.get("variants",[])
+        variants = product_data.get("variants", [])
         for var in variants:
-            inv_id= var.get("inventory_item_id")
+            inv_id = var.get("inventory_item_id")
             if inv_id:
                 update_inventory_level(domain, token, location_id, inv_id, qty)
 
         # Beroende på om qty=0 ska vi ev ta bort relevanta taggar/kollektioner
-        if qty==0:
+        if qty == 0:
             # Ta bort relevanta taggar i RELEVANT_TAGS
             new_t = []
             for t in combined_set:
@@ -406,7 +416,7 @@ def process_store1(db_tags, domain, token, location_id, coll_map, records):
             update_product_tags(domain, token, pid, new_t)
 
             # Bygg ny kollektionslista
-            series_list= build_series_list(new_t)  
+            series_list = build_series_list(new_t)
             print(f"   => Vill uppdatera kollektioner till: {series_list}")
             update_collections_for_product(domain, token, pid, series_list, coll_map)
 
@@ -427,65 +437,66 @@ def process_store2(db_tags,
     print("\n--- process_store2 (översätt via title) ---\n")
 
     # (A) Bygg parfnum-lager (från Google-lager)
-    parfnum_map={}
+    parfnum_map = {}
     for r in records:
-        raw_n= normalize_minus_sign(str(r.get("nummer:","")))
-        raw_a= normalize_minus_sign(str(r.get("Antal:","")))
+        raw_n = normalize_minus_sign(str(r.get("nummer:", "")))
+        raw_a = normalize_minus_sign(str(r.get("Antal:", "")))
         if not raw_n or not raw_a:
             continue
         try:
-            nf= float(raw_n)
-            ai= int(raw_a)
-            if ai<0: ai=0
-            parfnum_map[nf]= ai
+            nf = float(raw_n)
+            ai = int(raw_a)
+            if ai < 0:
+                ai = 0
+            parfnum_map[nf] = ai
         except ValueError:
             pass
 
     # (B) store1_id->product
-    store1_id_map= fetch_store_id_map(store1_domain, store1_token)
+    store1_id_map = fetch_store_id_map(store1_domain, store1_token)
     # (C) store2_title->product
-    store2_title_map= fetch_store_title_map(store2_domain, store2_token)
+    store2_title_map = fetch_store_title_map(store2_domain, store2_token)
 
     # (D) Loopa store1-produkter och kolla db_tags => uppdatera store2
     for pid, product_data in store1_id_map.items():
-        title= product_data.get("title","")
-        parfnum= extract_perfume_number_from_product_title(title)
+        title = product_data.get("title", "")
+        parfnum = extract_perfume_number_from_product_title(title)
         if parfnum is None:
             continue
         if parfnum not in parfnum_map:
             print(f"  => Ingen lagerinfo för parfymnr={parfnum} i Google-lager (title='{title}'), skippar.")
             continue
-        qty= parfnum_map[parfnum]
+        qty = parfnum_map[parfnum]
 
         # Hämta taggar för store1-produkten från DB eller Shopify
         if pid in db_tags:
             taglist = db_tags[pid][:]
         else:
-            st = product_data.get("tags","")
+            st = product_data.get("tags", "")
             st_list = [t.strip() for t in st.split(",") if t.strip()]
             taglist = st_list
 
         # Hitta motsvarande produkt i store2 via title.lower()
-        s2_product= store2_title_map.get(title.lower())
+        s2_product = store2_title_map.get(title.lower())
         if not s2_product:
             print(f"  => Hittar ingen match i store2 för title='{title}'")
             continue
 
-        s2_pid= str(s2_product["id"])
-        variants= s2_product.get("variants",[])
+        s2_pid = str(s2_product["id"])
+        variants = s2_product.get("variants", [])
 
         print(f"\n** [STORE2] Hanterar produkt: Titel='{title}', Parfymnr={parfnum}, PID={s2_pid}, Lager={qty} **")
 
         # Sätt lager i store2
         for var in variants:
-            inv_id= var.get("inventory_item_id")
+            inv_id = var.get("inventory_item_id")
             if inv_id:
                 update_inventory_level(store2_domain, store2_token, store2_location, inv_id, qty)
 
         # Kombinera DB-taggar med befintliga Shopify-taggar (store2), standardisera "best seller" -> "bestseller" 
-        s2_existing = s2_product.get("tags","")
+        s2_existing = s2_product.get("tags", "")
         s2_list = [t.strip() for t in s2_existing.split(",") if t.strip()]
-        
+
         combined_tags = []
         for x in (taglist + s2_list):
             lx = x.lower()
@@ -496,9 +507,9 @@ def process_store2(db_tags,
 
         old_store2_tags = list(s2_list)
 
-        if qty==0:
+        if qty == 0:
             # ta bort relevanta
-            new_t=[]
+            new_t = []
             for t in combined_set:
                 if t not in RELEVANT_TAGS:
                     new_t.append(t)
@@ -516,7 +527,7 @@ def process_store2(db_tags,
             print(f"   Nya Shopify-taggar (efter merge): {new_t}")
             update_product_tags(store2_domain, store2_token, s2_pid, new_t)
 
-            series_list= build_series_list(new_t)
+            series_list = build_series_list(new_t)
             print(f"   => Vill uppdatera kollektioner i store2 till: {series_list}")
             update_collections_for_product(store2_domain, store2_token, s2_pid, series_list, store2_coll_map)
 
@@ -527,42 +538,42 @@ def process_store2(db_tags,
 def main():
     try:
         # 1) Miljövariabler
-        db_url= os.getenv("DATABASE_URL")
+        db_url = os.getenv("DATABASE_URL")
         if not db_url:
             raise ValueError("Saknas DATABASE_URL")
         # Store 1
-        s1_domain= os.getenv("STORE1_DOMAIN")
-        s1_token= os.getenv("STORE1_TOKEN")
-        s1_loc= os.getenv("STORE1_LOCATION_ID")
-        s1_men= int(os.getenv("STORE1_MEN_COLLECTION_ID","0"))
-        s1_women= int(os.getenv("STORE1_WOMEN_COLLECTION_ID","0"))
-        s1_uni= int(os.getenv("STORE1_UNISEX_COLLECTION_ID","0"))
-        s1_best= int(os.getenv("STORE1_BESTSELLERS_COLLECTION_ID","0"))
+        s1_domain = os.getenv("STORE1_DOMAIN")
+        s1_token = os.getenv("STORE1_TOKEN")
+        s1_loc = os.getenv("STORE1_LOCATION_ID")
+        s1_men = int(os.getenv("STORE1_MEN_COLLECTION_ID","0"))
+        s1_women = int(os.getenv("STORE1_WOMEN_COLLECTION_ID","0"))
+        s1_uni = int(os.getenv("STORE1_UNISEX_COLLECTION_ID","0"))
+        s1_best = int(os.getenv("STORE1_BESTSELLERS_COLLECTION_ID","0"))
 
         # Store 2
-        s2_domain= os.getenv("STORE2_DOMAIN")
-        s2_token= os.getenv("STORE2_TOKEN")
-        s2_loc= os.getenv("STORE2_LOCATION_ID")
-        s2_men= int(os.getenv("STORE2_MEN_COLLECTION_ID","0"))
-        s2_women= int(os.getenv("STORE2_WOMEN_COLLECTION_ID","0"))
-        s2_uni= int(os.getenv("STORE2_UNISEX_COLLECTION_ID","0"))
-        s2_best= int(os.getenv("STORE2_BESTSELLERS_COLLECTION_ID","0"))
+        s2_domain = os.getenv("STORE2_DOMAIN")
+        s2_token = os.getenv("STORE2_TOKEN")
+        s2_loc = os.getenv("STORE2_LOCATION_ID")
+        s2_men = int(os.getenv("STORE2_MEN_COLLECTION_ID","0"))
+        s2_women = int(os.getenv("STORE2_WOMEN_COLLECTION_ID","0"))
+        s2_uni = int(os.getenv("STORE2_UNISEX_COLLECTION_ID","0"))
+        s2_best = int(os.getenv("STORE2_BESTSELLERS_COLLECTION_ID","0"))
 
         # 2) Google-lager
-        gc_json= os.getenv("GOOGLE_CREDENTIALS_JSON")
+        gc_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
         if not gc_json:
             raise ValueError("Saknas GOOGLE_CREDENTIALS_JSON")
-        scope= ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
-        creds_dict= json.loads(gc_json)
-        google_creds= ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        gs= gspread.authorize(google_creds)
+        scope = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
+        creds_dict = json.loads(gc_json)
+        google_creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        gs = gspread.authorize(google_creds)
 
-        sheet= gs.open("OBC lager").sheet1
-        records= sheet.get_all_records(expected_headers=["nummer:", "Antal:"])
+        sheet = gs.open("OBC lager").sheet1
+        records = sheet.get_all_records(expected_headers=["nummer:", "Antal:"])
         print(f"[main] => {len(records)} rader i Google-lager.\n")
 
         # 3) Ladda DB (relevant_tags_cache)
-        db_tags= load_tags_cache(db_url)
+        db_tags = load_tags_cache(db_url)
 
         # 4) Uppdatera Store1 direkt (master)
         print("\n--- [UPPDATERA STORE 1] ---\n")
@@ -603,3 +614,4 @@ def main():
 
 if __name__=="__main__":
     main()
+
